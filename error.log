@@ -26,3 +26,62 @@
 2025-11-17 20:49:54,214 [INFO] optimizer: Constraint analysis complete. Hints=26
 2025-11-17 20:49:54,214 [INFO] optimizer: Seeding population with 10 constraint-based individuals
 2025-11-17 20:50:10,936 [INFO] optimizer: Adaptive decimals increased to 1
+2025-11-17 21:51:57,677 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 21:52:37,236 [INFO] optimizer: Least squares rank=19 residuals=[]
+2025-11-17 21:52:37,241 [INFO] optimizer: Generated hints for 26 letters via least squares
+2025-11-17 21:52:37,246 [INFO] optimizer: Initial equation system produced hints for letters. Hints count=26
+2025-11-17 21:52:37,260 [INFO] optimizer: Constraint analysis complete. Hints=26
+2025-11-17 21:52:37,261 [INFO] optimizer: Seeding population with 10 constraint-based individuals
+2025-11-17 22:01:29,305 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 22:20:16,589 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 22:22:16,224 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 22:22:50,092 [INFO] optimizer: Least squares rank=12 residuals=[]
+2025-11-17 22:22:50,093 [INFO] optimizer: Generated hints for 26 letters via least squares
+2025-11-17 22:22:50,093 [INFO] optimizer: Initial equation system produced hints for letters. Hints count=26
+2025-11-17 22:22:50,093 [INFO] optimizer: Constraint analysis complete. Hints=26
+2025-11-17 22:22:50,094 [INFO] optimizer: Seeding population with 10 constraint-based individuals
+2025-11-17 22:22:51,335 [INFO] optimizer: Adaptive decimals increased to 1
+2025-11-17 22:22:52,869 [INFO] optimizer: Adaptive decimals increased to 2
+2025-11-17 22:22:53,260 [INFO] optimizer: Adaptive decimals increased to 3
+2025-11-17 22:22:53,576 [INFO] optimizer: Adaptive decimals increased to 4
+2025-11-17 22:22:53,893 [INFO] optimizer: Adaptive decimals increased to 5
+2025-11-17 22:22:54,225 [INFO] optimizer: Adaptive decimals increased to 7
+2025-11-17 22:23:25,042 [ERROR] app_gui: Explorer calculation failed
+Traceback (most recent call last):
+  File "C:\Users\User\Spelling_Numbers_With_Variables_Calculator\app_modern.py", line 653, in calculate_explorer
+    spelling = number_to_words(num)
+               ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\Spelling_Numbers_With_Variables_Calculator\number_to_words.py", line 88, in number_to_words
+    result = convert_below_thousand(billions) + " BILLION"
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\Spelling_Numbers_With_Variables_Calculator\number_to_words.py", line 54, in convert_below_thousand
+    result = ones[hundred] + " HUNDRED"
+             ~~~~^^^^^^^^^
+IndexError: list index out of range
+2025-11-17 22:23:27,458 [ERROR] app_gui: Explorer calculation failed
+Traceback (most recent call last):
+  File "C:\Users\User\Spelling_Numbers_With_Variables_Calculator\app_modern.py", line 653, in calculate_explorer
+    spelling = number_to_words(num)
+               ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\Spelling_Numbers_With_Variables_Calculator\number_to_words.py", line 88, in number_to_words
+    result = convert_below_thousand(billions) + " BILLION"
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\Spelling_Numbers_With_Variables_Calculator\number_to_words.py", line 54, in convert_below_thousand
+    result = ones[hundred] + " HUNDRED"
+             ~~~~^^^^^^^^^
+IndexError: list index out of range
+2025-11-17 22:24:15,954 [INFO] optimizer: Least squares rank=12 residuals=[]
+2025-11-17 22:24:15,955 [INFO] optimizer: Generated hints for 26 letters via least squares
+2025-11-17 22:24:15,955 [INFO] optimizer: Initial equation system produced hints for letters. Hints count=26
+2025-11-17 22:24:15,956 [INFO] optimizer: Constraint analysis complete. Hints=26
+2025-11-17 22:24:15,956 [INFO] optimizer: Seeding population with 10 constraint-based individuals
+2025-11-17 22:25:13,841 [INFO] optimizer: Adaptive decimals increased to 1
+2025-11-17 22:36:59,597 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-18 06:33:58,236 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-18 06:34:26,356 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-18 06:35:07,837 [INFO] optimizer: Least squares rank=19 residuals=[]
+2025-11-18 06:35:07,837 [INFO] optimizer: Generated hints for 26 letters via least squares
+2025-11-18 06:35:07,838 [INFO] optimizer: Initial equation system produced hints for letters. Hints count=26
+2025-11-18 06:35:07,863 [INFO] optimizer: Frequency solver seeded 19 letters using elimination heuristic
+2025-11-18 06:35:07,863 [INFO] optimizer: Constraint analysis complete. Hints=26 Constraints=1
+2025-11-18 06:35:07,864 [INFO] optimizer: Seeding population with 10 constraint-based individuals
