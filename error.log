@@ -1,0 +1,21 @@
+2025-11-17 18:49:50,667 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 18:50:54,073 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 18:50:58,568 [INFO] optimizer: Least squares rank=19 residuals=[]
+2025-11-17 18:50:58,569 [INFO] optimizer: Generated hints for 26 letters via least squares
+2025-11-17 18:50:58,569 [INFO] optimizer: Initial equation system produced hints for letters. Hints count=26
+2025-11-17 18:50:58,570 [INFO] optimizer: Constraint analysis complete. Hints=26
+2025-11-17 18:50:58,570 [INFO] optimizer: Seeding population with 10 constraint-based individuals
+2025-11-17 18:51:12,155 [INFO] optimizer: Adaptive decimals increased to 1
+2025-11-17 18:59:24,538 [INFO] logger_setup: Logging initialized -> C:\Users\User\Spelling_Numbers_With_Variables_Calculator\error.log
+2025-11-17 18:59:31,721 [INFO] optimizer: Least squares rank=19 residuals=[]
+2025-11-17 18:59:31,723 [INFO] optimizer: Generated hints for 26 letters via least squares
+2025-11-17 18:59:31,725 [INFO] optimizer: Initial equation system produced hints for letters. Hints count=26
+2025-11-17 18:59:31,727 [INFO] optimizer: Constraint analysis complete. Hints=26
+2025-11-17 18:59:31,727 [INFO] optimizer: Seeding population with 10 constraint-based individuals
+2025-11-17 18:59:31,747 [INFO] optimizer: Analytic linear solve complete: rank=19 residuals=[] fitness=188325.0000 solved=2/201
+2025-11-17 18:59:34,992 [INFO] optimizer: Adaptive decimals increased to 1
+2025-11-17 18:59:36,651 [INFO] optimizer: Adaptive decimals increased to 2
+2025-11-17 18:59:38,948 [INFO] optimizer: Adaptive decimals increased to 3
+2025-11-17 18:59:40,622 [INFO] optimizer: Adaptive decimals increased to 4
+2025-11-17 18:59:42,961 [INFO] optimizer: Adaptive decimals increased to 5
+2025-11-17 18:59:45,107 [INFO] optimizer: Adaptive decimals increased to 7
