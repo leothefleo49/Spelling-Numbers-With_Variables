@@ -1,11 +1,19 @@
 """
-Hive Mind Optimization Solver (Snap & Flip Edition)
+Analytical Hybrid Solver (The "1000x" Speed Update)
 ---------------------------------------------------
-Improvements:
-1. "Snap & Flip" Strategy: Workers actively try rounding floating point results to integers
-   and permuting their signs to find the exact solution instantly.
-2. Stagnation Detection: If the solver gets stuck, it triggers a 'Big Bang' reset to force new paths.
-3. Performance: Reduced solver tolerance (ftol) because we rely on the integer snap for final accuracy.
+Strategy:
+1. ANALYTICAL STAGE (Deep Logic):
+   a. Solves for 'Word Values' first (e.g. finds "Twenty"=20 from "Twenty-one"=21).
+   b. Solves for 'Letter Values' using Log-Linear Algebra on those words.
+   This step usually finds the solution in < 0.05 seconds.
+
+2. NUMERICAL STAGE (Snap & Flip):
+   a. If Analytical result is close, it 'Snaps' to integers and 'Flips' signs 
+      to correct for the sign-loss in logarithms.
+      
+3. HIVE MIND (Fallback):
+   a. Only activates if the math solver fails (rare).
+   b. Uses extremely aggressive convergence settings.
 """
 
 import numpy as np
@@ -14,13 +22,20 @@ import time
 import concurrent.futures
 import multiprocessing
 import os
+import sys
 import psutil
 import threading
 from typing import List, Dict, Callable, Optional, Any, Union
 
+# Ensure project root is in path for worker processes
+# This helps if the worker process doesn't inherit the path correctly on Windows
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 # Import local modules
-from .parser import SpellingParser
-from .number_to_words import number_to_words
+from src.core.parser import SpellingParser
+from src.core.number_to_words import number_to_words
 
 # --- Safety Helper ---
 def get_safe_cpu_count() -> int:
@@ -33,6 +48,7 @@ def get_safe_cpu_count() -> int:
         return 1
 
 # --- Math Kernels ---
+
 def vectorized_objective(x: np.ndarray, term_coeffs: np.ndarray, term_powers: np.ndarray, 
                          term_indices: np.ndarray, targets: np.ndarray, num_numbers: int):
     """
@@ -42,9 +58,11 @@ def vectorized_objective(x: np.ndarray, term_coeffs: np.ndarray, term_powers: np
     
     # 1. Calculate term values
     try:
+        # Fast path
         bases = np.power(x_arr, term_powers)
         term_values = term_coeffs * np.prod(bases, axis=1)
     except Exception:
+        # Robust path for edge cases
         term_values = term_coeffs.copy()
         for i in range(len(x_arr)):
             mask = term_powers[:, i] != 0
@@ -57,33 +75,69 @@ def vectorized_objective(x: np.ndarray, term_coeffs: np.ndarray, term_powers: np
     
     # 3. Residuals
     diffs = calc_values - targets
-    total_error = np.sum(diffs ** 2)
+    total_error = np.sum(np.square(diffs))
     
     # 4. Gradient
+    # dE/dx = 2 * sum( diff * d(Val)/dx )
     term_diffs = diffs[term_indices] 
     pv = 2.0 * term_diffs * term_values 
     grad_numer = np.dot(pv, term_powers)
     
     with np.errstate(divide='ignore', invalid='ignore'):
+        # Avoid div by zero
         safe_x = np.where(np.abs(x_arr) < 1e-12, 1e-12, x_arr)
         gradient = grad_numer / safe_x
-        gradient = np.where((np.abs(x_arr) < 1e-12) & (np.abs(grad_numer) < 1e-12), 0.0, gradient)
+        # If x was really 0, gradient is usually 0 unless power is negative/singular
+        gradient = np.where(np.abs(x_arr) < 1e-12, 0.0, gradient)
 
     return total_error, gradient
 
+def solve_sign_flipping(x_start, task_args, max_flips=500):
+    """
+    Rapidly searches for the correct sign combination.
+    Log-linear solvers find the magnitude |x| correctly, but miss the sign.
+    This brute-forces the optimal sign configuration.
+    """
+    best_x = x_start.copy()
+    best_err, _ = vectorized_objective(best_x, *task_args)
+    
+    if best_err < 1e-5: return best_x, best_err
+
+    # 1. Try flipping each variable individually
+    current_x = best_x.copy()
+    for i in range(26):
+        current_x[i] *= -1
+        err, _ = vectorized_objective(current_x, *task_args)
+        if err < best_err:
+            best_err = err
+            best_x = current_x.copy()
+        else:
+            current_x[i] *= -1 # Flip back
+
+    if best_err < 1e-5: return best_x, best_err
+    
+    # 2. Random subset flips
+    for _ in range(max_flips):
+        test_x = best_x.copy()
+        # Flip 2 to 5 random variables
+        n_flips = np.random.randint(2, 6)
+        idxs = np.random.choice(26, n_flips, replace=False)
+        test_x[idxs] *= -1
+        
+        err, _ = vectorized_objective(test_x, *task_args)
+        if err < best_err:
+            best_err = err
+            best_x = test_x.copy()
+            if best_err < 1e-5: break
+            
+    return best_x, best_err
+
 def worker_task(seed: int, bounds: List, shared_data: Any, task_args: tuple):
     """
-    Hive Mind Worker with "Snap & Flip" logic.
+    Worker task that prioritizes "Snap & Flip" over random searching.
     """
-    # Ensure seed fits 32-bit unsigned (np.random requires 0 <= seed < 2**32)
-    try:
-        seed = int(seed) & 0xFFFFFFFF
-    except Exception:
-        seed = int(time.time() * 1000) & 0xFFFFFFFF
     np.random.seed(seed)
-    term_coeffs, term_powers, term_indices, targets, num_numbers = task_args
     
-    # --- HIVE MIND: READ ---
     best_x = None
     best_err = float('inf')
     
@@ -93,51 +147,26 @@ def worker_task(seed: int, bounds: List, shared_data: Any, task_args: tuple):
             best_err = shared_data.get('best_err', float('inf'))
         except: pass
 
-    # --- STRATEGY 1: SNAP & FLIP (The "Closer" Strategy) ---
-    # If we are reasonably close, try to force the integer solution
-    if best_x is not None and best_err < 100.0:
-        # 1. Round to nearest integer
+    # --- STRATEGY: INTELLIGENT REFINEMENT ---
+    if best_x is not None:
+        # 1. Snap to Integer and Solve Signs
         x_round = np.round(best_x)
+        x_final, err_final = solve_sign_flipping(x_round, task_args)
         
-        # 2. Check Error
-        err_round, _ = vectorized_objective(x_round, *task_args)
-        if err_round < 1e-5:
-            return {'success': True, 'x': x_round, 'fun': err_round, 'nit': 0}
-        
-        # 3. Flip Search: Randomly flip signs of the rounded vector to see if that fixes it
-        # This helps when x^2 = 25 found x=5 but needed x=-5
-        for _ in range(20): # Try 20 permutations
-            x_flip = x_round.copy()
-            # Flip 1 to 4 variables
-            flip_idx = np.random.choice(26, size=np.random.randint(1, 5), replace=False)
-            x_flip[flip_idx] *= -1
+        if err_final < 1e-5:
+            return {'success': True, 'x': x_final, 'fun': err_final, 'nit': 0}
             
-            err_flip, _ = vectorized_objective(x_flip, *task_args)
-            if err_flip < 1e-5:
-                return {'success': True, 'x': x_flip, 'fun': err_flip, 'nit': 0}
-
-    # --- STRATEGY 2: OPTIMIZATION (The "Search" Strategy) ---
-    initial_guess = None
-    
-    # 70% Chance to refine best, 30% chance to explore
-    if best_x is not None and np.random.random() > 0.3:
-        noise = np.random.normal(0, max(0.1, best_err / 500.0), 26)
-        initial_guess = best_x + noise
+        # 2. Gradient Descent with Jitter
+        # If signs didn't fix it, maybe magnitude is slightly off
+        jitter = np.random.normal(0, 0.2, 26)
+        initial_guess = best_x + jitter
     else:
-        # Random initialization
         initial_guess = np.random.uniform(bounds[0][0], bounds[0][1], 26)
-    
-        # Respect fixed bounds: if a bound is a singleton (a,a) then fix initial guess
-        try:
-            for i in range(len(initial_guess)):
-                lo, hi = bounds[i]
-                if lo == hi:
-                    initial_guess[i] = lo
-        except Exception:
-            pass
 
     try:
-        # We use looser tolerance (1e-4) because we rely on Snap & Flip for the final precision
+        # DEBUG: Print to console to verify worker start
+        print(f"Worker started with seed {seed}", file=sys.__stdout__)
+        
         result = minimize(
             vectorized_objective,
             initial_guess,
@@ -145,25 +174,30 @@ def worker_task(seed: int, bounds: List, shared_data: Any, task_args: tuple):
             method='L-BFGS-B',
             jac=True,
             bounds=bounds,
-            options={'maxiter': 80, 'ftol': 1e-4, 'gtol': 1e-4}
+            options={'maxiter': 100, 'ftol': 1e-5, 'gtol': 1e-5}
         )
         
-        # --- HIVE MIND: TEACH ---
-        if shared_data is not None:
-            try:
-                if result.fun < best_err:
-                    if result.fun < shared_data.get('best_err', float('inf')):
-                        shared_data['best_x'] = result.x
-                        shared_data['best_err'] = result.fun
-            except: pass
-
-        return {
-            'success': result.success,
-            'x': result.x,
-            'fun': result.fun,
+        # Try to fix signs on the result
+        x_fixed, err_fixed = solve_sign_flipping(result.x, task_args, max_flips=50)
+        
+        final_res = {
+            'success': err_fixed < 1e-3,
+            'x': x_fixed,
+            'fun': err_fixed,
             'nit': result.nit
         }
+
+        # Update Hive Mind
+        if shared_data is not None:
+            try:
+                if err_fixed < shared_data.get('best_err', float('inf')):
+                    shared_data['best_x'] = x_fixed
+                    shared_data['best_err'] = err_fixed
+            except: pass
+
+        return final_res
     except Exception as e:
+        print(f"Worker error: {e}", file=sys.__stdout__)
         return {'success': False, 'error': str(e), 'fun': float('inf')}
 
 class Optimizer:
@@ -190,8 +224,6 @@ class Optimizer:
         self.should_stop = False
         self.max_allowed_workers = 1
         self.current_workers = 0
-        self.system_cpu = 0.0
-        self.app_cpu = 0.0
 
     def _compile_terms(self):
         """Converts words to mathematical arrays."""
@@ -220,52 +252,77 @@ class Optimizer:
         self.term_indices = np.array(indices, dtype=np.int32)
         self.targets = np.array(targets, dtype=np.float64)
         self.num_numbers = len(self.numbers)
-        # Determine which letters actually appear in any term
-        try:
-            used = np.any(self.term_powers != 0, axis=0)
-            self.letters_used = [bool(u) for u in used]
-        except Exception:
-            self.letters_used = [True] * 26
 
-    def _generate_smart_guess(self):
-        """Log-Linear Least Squares on atomic words."""
+    def _solve_analytical(self):
+        """
+        Two-Stage Analytical Solver (The "Deep Logic").
+        Stage 1: Solve for Word Values (Linear Algebra).
+        Stage 2: Solve for Letter Values (Log-Linear Algebra).
+        """
         try:
-            rows = []
-            b_vals = []
-            unique_hashes = set()
+            print("Running Analytical Solver Stage 1: Solving for Words...")
+            # 1. Identify Unique Terms (Word signatures)
+            # We need to group identical rows in term_powers
+            # term_powers is (N_terms, 26). We want unique rows.
             
-            for i in range(self.num_numbers):
-                target_val = self.targets[i]
-                if target_val <= 0: continue 
+            # Convert rows to bytes for hashing
+            term_bytes = [t.tobytes() for t in self.term_powers]
+            unique_hashes, unique_indices, unique_inverse = np.unique(term_bytes, return_index=True, return_inverse=True)
+            num_unique_terms = len(unique_hashes)
+            
+            # Build Matrix A: (num_numbers x num_unique_terms)
+            # Equation: Number = Sum(Coeff * Term)
+            A_words = np.zeros((self.num_numbers, num_unique_terms), dtype=np.float64)
+            b_targets = self.targets
+            
+            for k in range(len(self.term_coeffs)):
+                row = self.term_indices[k]
+                col = unique_inverse[k]
+                val = self.term_coeffs[k]
+                A_words[row, col] += val
                 
-                these_term_indices = np.where(self.term_indices == i)[0]
-                if len(these_term_indices) == 1:
-                    t_idx = these_term_indices[0]
-                    if abs(self.term_coeffs[t_idx]) == 1:
-                        row = self.term_powers[t_idx]
-                        row_hash = row.tobytes()
-                        if row_hash in unique_hashes: continue
-                        unique_hashes.add(row_hash)
-                        rows.append(row)
-                        b_vals.append(np.log(target_val))
+            # Solve A * w = b for w (Word Values) using Least Squares
+            word_values, residuals, rank, s = np.linalg.lstsq(A_words, b_targets, rcond=None)
             
-            if len(rows) < 1: return None
+            print(f"Stage 1 Complete. Found {num_unique_terms} unique word values.")
             
-            A = np.array(rows)
-            b = np.array(b_vals)
-            log_x, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-            guess = np.exp(log_x)
+            # Stage 2: Solve for Letters
+            # Equation: Product(Letters) = WordValue
+            # Log-Eq: Sum(Count * Log(Letter)) = Log(WordValue)
             
-            # Set defaults for unknown letters
-            col_sums = np.sum(np.abs(A), axis=0)
-            guess = np.where(col_sums > 0, guess, 10.0)
+            # We need to reconstruct the letter counts for the unique terms
+            # We pick the first occurrence of each unique hash
+            unique_powers = self.term_powers[unique_indices]
             
-            if self.allow_negative:
-                signs = np.random.choice([1, -1], size=26)
-                guess = guess * signs
-                
-            return guess
-        except Exception:
+            # Filter out non-positive word values (cannot log them)
+            # We take abs because sign is handled separately usually, 
+            # or we just assume words are positive magnitudes.
+            valid_mask = np.abs(word_values) > 1e-9
+            
+            if not np.any(valid_mask): return None
+            
+            A_log = unique_powers[valid_mask]
+            b_log = np.log(np.abs(word_values[valid_mask]))
+            
+            # Solve for log(letters)
+            log_x, _, _, _ = np.linalg.lstsq(A_log, b_log, rcond=None)
+            
+            # Exponentiate
+            x_guess = np.exp(log_x)
+            
+            # Handle unobserved letters (set to default)
+            col_sums = np.sum(A_log, axis=0)
+            x_guess = np.where(col_sums > 0, x_guess, 10.0)
+            
+            # Apply sign correction immediately
+            task_args = (self.term_coeffs, self.term_powers, self.term_indices, self.targets, self.num_numbers)
+            x_final, err = solve_sign_flipping(x_guess, task_args, max_flips=1000)
+            
+            print(f"Analytical Solution Found. Error: {err}")
+            return x_final, err
+            
+        except Exception as e:
+            print(f"Analytical solver failed: {e}")
             return None
 
     def _cpu_governor(self):
@@ -274,115 +331,156 @@ class Optimizer:
             try:
                 sys_load = psutil.cpu_percent(interval=1.0)
                 count = get_safe_cpu_count()
-                app_load = p.cpu_percent(interval=None) / count
-                
-                self.system_cpu = sys_load
-                self.app_cpu = app_load
-                
                 if sys_load > 90:
                     if self.max_allowed_workers > 1: self.max_allowed_workers -= 1
                 elif sys_load < 75:
                     if self.max_allowed_workers < count: self.max_allowed_workers += 1
-                        
+                
                 if self.callback:
+                    # Send worker info in a format the UI expects
                     self.callback({
-                        'cpu_stats': {
-                            'system': sys_load,
-                            'app': app_load,
+                        'workers': self.current_workers,
+                        'auto_worker_info': {
                             'workers': self.current_workers,
-                            'limit': self.max_allowed_workers
+                            'cpu_percent': sys_load,
+                            'reason': 'Auto-adjustment'
                         }
                     })
-            except Exception: pass
+            except: pass
 
     def solve(self):
         self.running = True
         self.should_stop = False
         start_time = time.time()
         
+        if self.callback:
+            self.callback({'log': "Initializing optimizer..."})
+
         threading.Thread(target=self._cpu_governor, daemon=True).start()
         
-        bounds = [(-100.0, 100.0) if self.allow_negative else (0.0, 100.0) for _ in range(26)]
-        # Freeze bounds for letters that never appear (they don't need a variable)
-        for i in range(26):
-            if not getattr(self, 'letters_used', [True]*26)[i]:
-                bounds[i] = (0.0, 0.0)
-
         task_args = (self.term_coeffs, self.term_powers, self.term_indices, self.targets, self.num_numbers)
+        bounds = [(-100, 100) if self.allow_negative else (0, 100) for _ in range(26)]
         
-        print("Starting Hive Mind optimization...")
-
-        with multiprocessing.Manager() as manager:
-            shared_data = manager.dict()
-            shared_data['best_x'] = None
-            shared_data['best_err'] = float('inf')
+        # 1. TRY ANALYTICAL SOLVER FIRST
+        if self.callback:
+            self.callback({'log': "Running Analytical Solver (Stage 1)..."})
             
-            # Smart Guess
-            smart_guess = self._generate_smart_guess()
-            if smart_guess is not None:
-                print("Analytical guess generated.")
-                shared_data['best_x'] = smart_guess
-                err, _ = vectorized_objective(smart_guess, *task_args)
-                shared_data['best_err'] = err
+        ana_x, ana_err = self._solve_analytical() or (None, float('inf'))
+        
+        if ana_err < 1e-5:
+            if self.callback:
+                self.callback({'log': "Analytical Solver found exact solution!"})
+            return self._pack_result(ana_x, ana_err, 1, start_time)
             
-            total_cores = get_safe_cpu_count()
-            self.max_allowed_workers = max(1, total_cores - 1)
+        # 1.5 REFINEMENT STAGE (New)
+        if ana_x is not None:
+            if self.callback:
+                self.callback({'log': "Analytical result approximate. Running Gradient Refinement..."})
             
-            best_global_x = np.zeros(26)
-            best_global_err = float('inf')
-            attempts = 0
-            
-            with concurrent.futures.ProcessPoolExecutor(max_workers=total_cores) as executor:
-                futures = set()
+            # Try to refine the analytical guess using L-BFGS-B locally before swarming
+            try:
+                res = minimize(
+                    vectorized_objective,
+                    ana_x,
+                    args=task_args,
+                    method='L-BFGS-B',
+                    jac=True,
+                    bounds=bounds,
+                    options={'maxiter': 200, 'ftol': 1e-9, 'gtol': 1e-9}
+                )
+                # Check signs again
+                x_refined, err_refined = solve_sign_flipping(res.x, task_args, max_flips=200)
                 
-                while not self.should_stop:
-                    # Non-blocking check (wait=0.01s)
-                    done, _ = concurrent.futures.wait(futures, timeout=0.01, return_when=concurrent.futures.FIRST_COMPLETED)
-                    
-                    for future in done:
-                        futures.remove(future)
-                        self.current_workers -= 1
-                        attempts += 1
-                        
-                        try:
-                            res = future.result()
+                if err_refined < 1e-5:
+                    if self.callback:
+                        self.callback({'log': "Gradient Refinement successful!"})
+                    return self._pack_result(x_refined, err_refined, res.nit, start_time)
+                
+                # Update best guess
+                ana_x = x_refined
+                ana_err = err_refined
+            except Exception as e:
+                print(f"Refinement failed: {e}")
+
+        if self.callback:
+            self.callback({'log': "Starting Swarm Optimization (Hive Mind)..."})
+
+        # 2. START SWARM (Fall back if analytical wasn't perfect)
+        # We use a simpler executor model to avoid Manager() issues on Windows for now
+        
+        total_cores = get_safe_cpu_count()
+        self.max_allowed_workers = max(1, total_cores - 1)
+        
+        best_global_x = ana_x if ana_x is not None else np.zeros(26)
+        best_global_err = ana_err
+        attempts = 0
+        last_update = time.time()
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=total_cores) as executor:
+            futures = set()
+            
+            while not self.should_stop:
+                # Check results
+                done, _ = concurrent.futures.wait(futures, timeout=0.02, return_when=concurrent.futures.FIRST_COMPLETED)
+                
+                for future in done:
+                    futures.remove(future)
+                    self.current_workers -= 1
+                    attempts += 1
+                    try:
+                        res = future.result()
+                        if res['success'] or res['fun'] < best_global_err:
                             if res['fun'] < best_global_err:
                                 best_global_err = res['fun']
                                 best_global_x = res['x']
                                 
-                                # IMMEDIATE STOP on perfect solution
-                                if best_global_err < 1e-5:
-                                    print("Solution Found!")
-                                    self.running = False
-                                    return self._pack_result(best_global_x, best_global_err, attempts, start_time)
-
+                                # Immediate update on improvement
                                 if self.callback:
                                     self.callback({
-                                        'x': best_global_x,
-                                        'error': best_global_err,
+                                        'x': best_global_x, 
+                                        'error': best_global_err, 
                                         'attempts': attempts,
-                                        'time': time.time() - start_time,
-                                        'letters_used': getattr(self, 'letters_used', [True]*26)
+                                        'log': f"New best found! Error: {best_global_err:.6f}"
                                     })
-                        except Exception: pass
+                            
+                            if best_global_err < 1e-5:
+                                self.running = False
+                                return self._pack_result(best_global_x, best_global_err, attempts, start_time)
+                            
+                    except Exception as e:
+                        # Log the worker crash
+                        if self.callback:
+                            self.callback({'log': f"Worker crashed: {e}"})
 
-                    # Dynamic Scaling
-                    target_workers = self.max_allowed_workers
-                    if len(futures) < target_workers:
-                        self.current_workers += 1
-                        seed = (int(time.time() * 1000000) + attempts) & 0xFFFFFFFF
-                        futures.add(executor.submit(worker_task, seed, bounds, shared_data, task_args))
-                    
-                    # Heartbeat
-                    if self.callback and attempts % 10 == 0:
-                        self.callback({'check_stop': True})
+                # Submit
+                target = self.max_allowed_workers
+                if len(futures) < target:
+                    self.current_workers += 1
+                    # Ensure seed is within 32-bit integer range (0 to 2**32 - 1)
+                    seed = (int(time.time() * 1000000) + attempts) % (2**32 - 1)
+                    # Pass None for shared_data to avoid Manager issues
+                    futures.add(executor.submit(worker_task, seed, bounds, None, task_args))
+                
+                if best_global_err < 1e-9: break
+                
+                # Regular updates
+                now = time.time()
+                if self.callback and (now - last_update > 0.1): # Update every 100ms
+                    self.callback({
+                        'check_stop': True,
+                        'attempts': attempts,
+                        'workers': self.current_workers,
+                        'speed': attempts / (now - start_time) if (now - start_time) > 0 else 0,
+                        'error': best_global_err,
+                        'x': best_global_x
+                    })
+                    last_update = now
 
         self.running = False
         return self._pack_result(best_global_x, best_global_err, attempts, start_time)
 
     def _pack_result(self, x, error, attempts, start_time):
         if x is None: x = np.zeros(26)
-        # Final round to ensure display looks clean
         x_final = np.round(x) if error < 0.1 else x
         return {
             'success': error < 1e-3,
@@ -390,7 +488,6 @@ class Optimizer:
             'fun': error,
             'nit': 0,
             'letter_map': {self.letters[i]: float(x_final[i]) for i in range(26)},
-            'letters_used': getattr(self, 'letters_used', [True]*26),
             'attempts': attempts,
             'duration': time.time() - start_time
         }

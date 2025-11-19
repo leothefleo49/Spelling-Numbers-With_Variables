@@ -235,8 +235,23 @@ class App(ctk.CTk):
         self.log(f"Starting optimization ({start} to {end})...")
         
         self.start_time = time.time()
+        self.update_timer()  # Start the smooth timer
         
         threading.Thread(target=self.run_optimizer_thread, args=(start, end), daemon=True).start()
+
+    def update_timer(self):
+        if self.is_running:
+            elapsed = int(time.time() - self.start_time)
+            mins, secs = divmod(elapsed, 60)
+            hrs, mins = divmod(mins, 60)
+            
+            if hrs > 0:
+                time_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+            else:
+                time_str = f"{mins:02d}:{secs:02d}"
+                
+            self.stat_time.configure(text=time_str)
+            self.after(100, self.update_timer)
 
     def stop_optimization(self):
         self.is_running = False
@@ -274,10 +289,7 @@ class App(ctk.CTk):
             return
 
         err = data.get('error')
-        if err is None or not isinstance(err, (int, float)):
-            self.big_error_lbl.configure(text="unknown")
-            self.big_error_lbl.configure(text_color="#95A5A6")  # Gray
-        else:
+        if err is not None and isinstance(err, (int, float)):
             self.big_error_lbl.configure(text=f"{err:.6f}")
             
             # Color code error
@@ -294,10 +306,8 @@ class App(ctk.CTk):
             aps = data.get('attempts_per_sec', data.get('speed', 0.0))
             self.stat_speed.configure(text=f"{aps:.1f} it/s")
         
-        if 'time' in data:
-            elapsed = int(data['time'])
-            mins, secs = divmod(elapsed, 60)
-            self.stat_time.configure(text=f"{mins:02d}:{secs:02d}")
+        # Time is handled by update_timer now, but we can respect override if needed
+        # if 'time' in data: ...
         
         if 'workers' in data:
             self.stat_workers.configure(text=f"{data['workers']}")
@@ -330,7 +340,7 @@ class App(ctk.CTk):
                 cpu = info.get('cpu_percent')
                 reason = info.get('reason')
                 self.status_lbl.configure(text=f"Auto workers: {w} (CPU {cpu:.0f}%)", text_color="gray70")
-                self.log(f"Auto worker decision: workers={w}, cpu={cpu:.1f}%, reason={reason}")
+                # self.log(f"Auto worker decision: workers={w}, cpu={cpu:.1f}%, reason={reason}") # Too spammy
             except Exception:
                 pass
         # Any general log messages
@@ -411,6 +421,7 @@ class App(ctk.CTk):
         self.main_view.set("Results Analysis")
 
     def reset_ui(self):
+        self.is_running = False
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self.status_lbl.configure(text="Idle", text_color="gray70")

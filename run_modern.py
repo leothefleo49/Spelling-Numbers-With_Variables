@@ -22,6 +22,18 @@ def install_requirements():
             sys.exit(1)
 
 if __name__ == "__main__":
+    # Fix for multiprocessing on Windows
+    import multiprocessing
+    multiprocessing.freeze_support()
+
+    # Prevent NumPy/SciPy from using multiple threads in worker processes
+    # This avoids deadlocks and oversubscription
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
     install_requirements()
     
     # Add src to path
