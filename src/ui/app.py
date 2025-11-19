@@ -4,6 +4,9 @@ import time
 from tkinter import messagebox
 import sys
 import os
+import math
+import multiprocessing
+import numpy as np
 
 # Add src to path to import core modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -13,269 +16,425 @@ from src.core.parser import SpellingParser
 from src.core.number_to_words import number_to_words
 
 ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("dark-blue")
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Spelling Numbers Solver")
-        self.geometry("1100x700")
-
-        # Grid layout
+        self.title("Spelling Numbers Solver Pro")
+        self.geometry("1200x800")
+        # Minimum size to keep layout usable across different UIs
+        self.minsize(900, 600)
+        
+        # Configure grid
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Sidebar
-        self.sidebar_frame = ctk.CTkFrame(self, width=250, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(10, weight=1)
+        # --- Sidebar ---
+        self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=20)
+        self.sidebar.grid(row=0, column=0, sticky="nsew", padx=20, pady=20)
+        self.sidebar.grid_rowconfigure(10, weight=1)
 
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Solver Settings", font=ctk.CTkFont(size=20, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+        # Title
+        self.logo = ctk.CTkLabel(self.sidebar, text="Solver Pro", font=ctk.CTkFont(size=28, weight="bold"))
+        self.logo.grid(row=0, column=0, padx=20, pady=(30, 20))
 
-        # Range Inputs
-        self.start_label = ctk.CTkLabel(self.sidebar_frame, text="Start Range:", anchor="w")
-        self.start_label.grid(row=1, column=0, padx=20, pady=(10, 0), sticky="w")
-        self.start_entry = ctk.CTkEntry(self.sidebar_frame)
-        self.start_entry.grid(row=2, column=0, padx=20, pady=(0, 10))
-        self.start_entry.insert(0, "-10")
+        # Inputs
+        self.create_input_group("Range Settings", 1)
+        self.start_entry = self.create_labeled_entry("Start Number:", "-10", 2)
+        self.end_entry = self.create_labeled_entry("End Number:", "10", 3)
 
-        self.end_label = ctk.CTkLabel(self.sidebar_frame, text="End Range:", anchor="w")
-        self.end_label.grid(row=3, column=0, padx=20, pady=(10, 0), sticky="w")
-        self.end_entry = ctk.CTkEntry(self.sidebar_frame)
-        self.end_entry.grid(row=4, column=0, padx=20, pady=(0, 10))
-        self.end_entry.insert(0, "10")
+        self.create_input_group("Operators", 4)
+        self.space_opt = self.create_option("Space Operator:", ["auto", "multiply", "add"], 5)
+        self.hyphen_opt = self.create_option("Hyphen Operator:", ["minus", "add", "multiply"], 6)
 
-        # Advanced Settings
-        self.adv_label = ctk.CTkLabel(self.sidebar_frame, text="Advanced Settings", font=ctk.CTkFont(size=16, weight="bold"))
-        self.adv_label.grid(row=5, column=0, padx=20, pady=(20, 10))
-
-        # Space Operator
-        self.space_label = ctk.CTkLabel(self.sidebar_frame, text="Space Operator:", anchor="w")
-        self.space_label.grid(row=6, column=0, padx=20, pady=(5, 0), sticky="w")
-        self.space_opt = ctk.CTkOptionMenu(self.sidebar_frame, values=["auto", "multiply", "add"])
-        self.space_opt.grid(row=7, column=0, padx=20, pady=(0, 10))
-        self.space_opt.set("auto")
-
-        # Hyphen Operator
-        self.hyphen_label = ctk.CTkLabel(self.sidebar_frame, text="Hyphen Operator:", anchor="w")
-        self.hyphen_label.grid(row=8, column=0, padx=20, pady=(5, 0), sticky="w")
-        self.hyphen_opt = ctk.CTkOptionMenu(self.sidebar_frame, values=["minus", "add", "multiply"])
-        self.hyphen_opt.grid(row=9, column=0, padx=20, pady=(0, 10))
-        self.hyphen_opt.set("minus")
-
-        # CPU Usage
-        self.cpu_label = ctk.CTkLabel(self.sidebar_frame, text="CPU Usage (Workers):", anchor="w")
-        self.cpu_label.grid(row=10, column=0, padx=20, pady=(5, 0), sticky="w")
-        self.cpu_opt = ctk.CTkOptionMenu(self.sidebar_frame, values=["auto", "max", "1", "2", "4", "8", "16"])
-        self.cpu_opt.grid(row=11, column=0, padx=20, pady=(0, 10))
-        self.cpu_opt.set("auto")
-
-        # Allow Negative
-        self.neg_switch = ctk.CTkSwitch(self.sidebar_frame, text="Allow Negative Letters")
-        self.neg_switch.grid(row=12, column=0, padx=20, pady=(10, 20))
+        self.create_input_group("System", 7)
+        self.cpu_opt = self.create_option("CPU Workers:", ["auto", "max", "1", "2", "4", "8", "16"], 8)
+        
+        self.neg_switch = ctk.CTkSwitch(self.sidebar, text="Allow Negative Variables", font=ctk.CTkFont(size=14))
+        self.neg_switch.grid(row=9, column=0, padx=25, pady=(20, 10), sticky="w")
         self.neg_switch.select()
 
-        # Buttons
-        self.start_button = ctk.CTkButton(self.sidebar_frame, text="Start Optimization", command=self.start_optimization)
-        self.start_button.grid(row=13, column=0, padx=20, pady=20)
+        # Control Buttons
+        self.btn_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        self.btn_frame.grid(row=11, column=0, padx=20, pady=20, sticky="ew")
+        self.btn_frame.grid_columnconfigure((0, 1), weight=1)
 
-        self.stop_button = ctk.CTkButton(self.sidebar_frame, text="Stop", fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), command=self.stop_optimization, state="disabled")
-        self.stop_button.grid(row=14, column=0, padx=20, pady=(0, 20))
+        self.start_btn = ctk.CTkButton(self.btn_frame, text="START", font=ctk.CTkFont(weight="bold"), 
+                                       height=40, corner_radius=10, fg_color="#2CC985", hover_color="#22A06B",
+                                       command=self.start_optimization)
+        self.start_btn.grid(row=0, column=0, padx=5, sticky="ew")
+
+        self.stop_btn = ctk.CTkButton(self.btn_frame, text="STOP", font=ctk.CTkFont(weight="bold"),
+                                      height=40, corner_radius=10, fg_color="#FF4757", hover_color="#CC3946",
+                                      state="disabled", command=self.stop_optimization)
+        self.stop_btn.grid(row=0, column=1, padx=5, sticky="ew")
 
         # Status
-        self.status_label = ctk.CTkLabel(self.sidebar_frame, text="Status: Idle", text_color="gray")
-        self.status_label.grid(row=15, column=0, padx=20, pady=10)
+        self.status_lbl = ctk.CTkLabel(self.sidebar, text="Ready", text_color="gray70")
+        self.status_lbl.grid(row=12, column=0, pady=(0, 20))
 
-        # Main Content
-        self.tabview = ctk.CTkTabview(self, width=250)
-        self.tabview.grid(row=0, column=1, padx=(20, 20), pady=(20, 20), sticky="nsew")
-        self.tabview.add("Progress")
-        self.tabview.add("Results")
-        self.tabview.add("Explorer")
-
-        # Progress Tab
-        self.setup_progress_tab()
+        # --- Main Content ---
+        self.main_view = ctk.CTkTabview(self, corner_radius=20)
+        self.main_view.grid(row=0, column=1, padx=(0, 20), pady=20, sticky="nsew")
         
-        # Results Tab
-        self.setup_results_tab()
+        self.tab_progress = self.main_view.add("Live Progress")
+        self.tab_results = self.main_view.add("Results Analysis")
+        self.tab_explorer = self.main_view.add("Number Explorer")
 
-        # Explorer Tab
+        self.setup_progress_tab()
+        self.setup_results_tab()
         self.setup_explorer_tab()
 
         self.optimizer = None
         self.is_running = False
+        self.start_time = 0
+
+    def create_input_group(self, text, row):
+        lbl = ctk.CTkLabel(self.sidebar, text=text, font=ctk.CTkFont(size=14, weight="bold"), text_color=("gray50", "gray70"))
+        lbl.grid(row=row, column=0, padx=25, pady=(20, 5), sticky="w")
+
+    def create_labeled_entry(self, text, default, row):
+        frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        frame.grid(row=row, column=0, padx=20, pady=5, sticky="ew")
+        frame.grid_columnconfigure(1, weight=1)
+        
+        lbl = ctk.CTkLabel(frame, text=text, width=100, anchor="w")
+        lbl.grid(row=0, column=0)
+        
+        entry = ctk.CTkEntry(frame, height=30, corner_radius=8)
+        entry.grid(row=0, column=1, sticky="ew")
+        entry.insert(0, default)
+        return entry
+
+    def create_option(self, text, values, row):
+        frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
+        frame.grid(row=row, column=0, padx=20, pady=5, sticky="ew")
+        frame.grid_columnconfigure(1, weight=1)
+        
+        lbl = ctk.CTkLabel(frame, text=text, width=100, anchor="w")
+        lbl.grid(row=0, column=0)
+        
+        opt = ctk.CTkOptionMenu(frame, values=values, height=30, corner_radius=8)
+        opt.grid(row=0, column=1, sticky="ew")
+        opt.set(values[0])
+        return opt
 
     def setup_progress_tab(self):
-        self.tabview.tab("Progress").grid_columnconfigure(0, weight=1)
+        self.tab_progress.grid_columnconfigure(0, weight=1)
+        self.tab_progress.grid_rowconfigure(2, weight=1)
+
+        # Big Error Display
+        self.error_frame = ctk.CTkFrame(self.tab_progress, corner_radius=15)
+        self.error_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
         
-        self.progress_frame = ctk.CTkFrame(self.tabview.tab("Progress"))
-        self.progress_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
-        self.progress_frame.grid_columnconfigure(0, weight=1)
+        self.big_error_lbl = ctk.CTkLabel(self.error_frame, text="0.000000", font=ctk.CTkFont(family="Roboto Mono", size=48, weight="bold"), text_color="#FF4757")
+        self.big_error_lbl.pack(pady=20)
+        self.error_desc_lbl = ctk.CTkLabel(self.error_frame, text="Current Total Error", font=ctk.CTkFont(size=14))
+        self.error_desc_lbl.pack(pady=(0, 20))
 
-        self.error_label = ctk.CTkLabel(self.progress_frame, text="Current Error: --", font=ctk.CTkFont(size=24))
-        self.error_label.grid(row=0, column=0, pady=20)
+        # Stats Grid
+        self.stats_frame = ctk.CTkFrame(self.tab_progress, fg_color="transparent")
+        self.stats_frame.grid(row=1, column=0, padx=20, pady=(0, 20), sticky="ew")
+        self.stats_frame.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
-        self.log_textbox = ctk.CTkTextbox(self.tabview.tab("Progress"), width=400)
-        self.log_textbox.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
-        self.tabview.tab("Progress").grid_rowconfigure(1, weight=1)
+        self.stat_attempts = self.create_stat_box(self.stats_frame, "Attempts", "0", 0)
+        self.stat_speed = self.create_stat_box(self.stats_frame, "Speed", "0 it/s", 1)
+        self.stat_time = self.create_stat_box(self.stats_frame, "Time Elapsed", "00:00", 2)
+        self.stat_workers = self.create_stat_box(self.stats_frame, "Active Workers", "0", 3)
+        self.stat_eta = self.create_stat_box(self.stats_frame, "ETA", "—", 4)
+
+        # Log
+        self.log_box = ctk.CTkTextbox(self.tab_progress, font=ctk.CTkFont(family="Consolas", size=12), corner_radius=10)
+        self.log_box.grid(row=2, column=0, padx=20, pady=20, sticky="nsew")
+
+    def create_stat_box(self, parent, title, value, col):
+        frame = ctk.CTkFrame(parent, corner_radius=10)
+        frame.grid(row=0, column=col, padx=5, sticky="ew")
+        
+        lbl_title = ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(size=12, weight="bold"), text_color="gray70")
+        lbl_title.pack(pady=(10, 0))
+        
+        lbl_val = ctk.CTkLabel(frame, text=value, font=ctk.CTkFont(size=16, weight="bold"))
+        lbl_val.pack(pady=(0, 10))
+        return lbl_val
 
     def setup_results_tab(self):
-        self.tabview.tab("Results").grid_columnconfigure(0, weight=1)
-        self.tabview.tab("Results").grid_rowconfigure(1, weight=1)
+        self.tab_results.grid_columnconfigure(0, weight=1)
+        self.tab_results.grid_rowconfigure(1, weight=1)
 
-        self.letters_frame = ctk.CTkScrollableFrame(self.tabview.tab("Results"), height=200, orientation="horizontal")
-        self.letters_frame.grid(row=0, column=0, padx=20, pady=10, sticky="ew")
+        # Letters Grid inside a scrollable frame so UI doesn't cut off on smaller windows
+        self.letters_frame = ctk.CTkScrollableFrame(self.tab_results, corner_radius=10, height=180)
+        self.letters_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
         
-        self.letter_labels = {}
+        self.letter_widgets = {}
         for i in range(26):
             l = chr(65+i)
-            lbl = ctk.CTkLabel(self.letters_frame, text=f"{l}: --", font=ctk.CTkFont(family="Consolas", size=14))
-            lbl.pack(side="left", padx=10)
-            self.letter_labels[l] = lbl
+            f = ctk.CTkFrame(self.letters_frame, fg_color="transparent")
+            f.grid(row=i//9, column=i%9, padx=5, pady=5, sticky="ew")
+            
+            ctk.CTkLabel(f, text=l, font=ctk.CTkFont(weight="bold")).pack(side="left")
+            val = ctk.CTkLabel(f, text="0.00", font=ctk.CTkFont(family="Consolas"), text_color="#2CC985")
+            val.pack(side="right", padx=5)
+            self.letter_widgets[l] = val
+            
+        self.letters_frame.grid_columnconfigure(tuple(range(9)), weight=1)
 
-        self.results_textbox = ctk.CTkTextbox(self.tabview.tab("Results"), font=ctk.CTkFont(family="Consolas", size=12))
-        self.results_textbox.grid(row=1, column=0, padx=20, pady=10, sticky="nsew")
+        # Detailed List
+        self.results_box = ctk.CTkTextbox(self.tab_results, font=ctk.CTkFont(family="Consolas", size=14), corner_radius=10)
+        self.results_box.grid(row=1, column=0, padx=20, pady=20, sticky="nsew")
 
     def setup_explorer_tab(self):
-        self.tabview.tab("Explorer").grid_columnconfigure(0, weight=1)
+        self.tab_explorer.grid_columnconfigure(0, weight=1)
         
-        self.exp_entry = ctk.CTkEntry(self.tabview.tab("Explorer"), placeholder_text="Enter a number (e.g. 123)")
-        self.exp_entry.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
+        self.exp_entry = ctk.CTkEntry(self.tab_explorer, placeholder_text="Type a number (e.g. 123) or words (ONE HUNDRED)", height=40, font=ctk.CTkFont(size=16))
+        self.exp_entry.grid(row=0, column=0, padx=40, pady=40, sticky="ew")
+        self.exp_entry.bind("<Return>", lambda e: self.run_explorer())
         
-        self.exp_btn = ctk.CTkButton(self.tabview.tab("Explorer"), text="Calculate", command=self.run_explorer)
-        self.exp_btn.grid(row=1, column=0, padx=20, pady=10)
+        self.exp_btn = ctk.CTkButton(self.tab_explorer, text="Calculate Value", height=40, command=self.run_explorer)
+        self.exp_btn.grid(row=1, column=0, padx=40, pady=(0, 20))
         
-        self.exp_result = ctk.CTkTextbox(self.tabview.tab("Explorer"), font=ctk.CTkFont(family="Consolas", size=14))
-        self.exp_result.grid(row=2, column=0, padx=20, pady=20, sticky="nsew")
-        self.tabview.tab("Explorer").grid_rowconfigure(2, weight=1)
+        self.exp_out = ctk.CTkTextbox(self.tab_explorer, font=ctk.CTkFont(family="Consolas", size=16), corner_radius=15)
+        self.exp_out.grid(row=2, column=0, padx=40, pady=20, sticky="nsew")
+        self.tab_explorer.grid_rowconfigure(2, weight=1)
 
-    def log(self, message):
-        self.log_textbox.insert("end", message + "\n")
-        self.log_textbox.see("end")
+    def log(self, msg):
+        self.log_box.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+        self.log_box.see("end")
 
     def start_optimization(self):
         try:
             start = int(self.start_entry.get())
             end = int(self.end_entry.get())
         except ValueError:
-            messagebox.showerror("Error", "Invalid range")
+            messagebox.showerror("Error", "Invalid range inputs")
             return
 
-        self.start_button.configure(state="disabled")
-        self.stop_button.configure(state="normal")
-        self.status_label.configure(text="Status: Optimizing...", text_color="orange")
-        self.log_textbox.delete("1.0", "end")
-        self.log(f"Starting optimization for range {start} to {end}...")
+        allow_neg = bool(self.neg_switch.get())
+
+        if not allow_neg:
+            if end < 0:
+                messagebox.showerror("Error", "Negatives disabled. Please enable to run this calculation.")
+                return
+            if start < 0:
+                should_continue = messagebox.askokcancel(
+                    "Warning", 
+                    "Negatives are disabled.\n\nThis calculation will run without the negative portions (0 and above).\n\nDo you want to continue?"
+                )
+                if not should_continue:
+                    self.reset_ui()
+                    return
+                start = 0
 
         self.is_running = True
-        threading.Thread(target=self.run_optimizer, args=(start, end), daemon=True).start()
+        self.start_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        self.status_lbl.configure(text="Optimizing... (Continuous Mode)", text_color="#2CC985")
+        self.log_box.delete("1.0", "end")
+        self.log(f"Starting optimization ({start} to {end})...")
+        
+        self.start_time = time.time()
+        
+        threading.Thread(target=self.run_optimizer_thread, args=(start, end), daemon=True).start()
 
     def stop_optimization(self):
         self.is_running = False
-        self.log("Stopping...")
+        self.log("Stopping requested...")
+        self.status_lbl.configure(text="Stopping...", text_color="orange")
 
-    def run_optimizer(self, start, end):
+    def run_optimizer_thread(self, start, end):
         try:
             def callback(data):
                 if not self.is_running:
                     raise StopIteration
                 
-                # Update UI periodically
-                # Use after() to schedule UI updates on the main thread to avoid freezing
-                if int(data['time'] * 10) % 5 == 0: # throttle updates
-                    self.after(0, lambda: self.error_label.configure(text=f"Error: {data['error']:.4f}"))
-                    self.after(0, lambda: self.log(f"Time: {data['time']:.1f}s | Error: {data['error']:.6f}"))
-            
-            space_op = self.space_opt.get()
-            hyphen_op = self.hyphen_opt.get()
-            cpu_usage = self.cpu_opt.get()
-            allow_neg = bool(self.neg_switch.get())
+                # Update UI immediately (or let Tkinter handle the queue)
+                self.after(0, lambda: self.update_progress(data))
 
-            self.optimizer = Optimizer(start, end, 
-                                       space_operator=space_op, 
-                                       hyphen_operator=hyphen_op,
-                                       cpu_usage=cpu_usage,
-                                       allow_negative=allow_neg,
-                                       callback=callback)
+            self.optimizer = Optimizer(
+                start, end,
+                space_operator=self.space_opt.get(),
+                hyphen_operator=self.hyphen_opt.get(),
+                cpu_usage=self.cpu_opt.get(),
+                allow_negative=bool(self.neg_switch.get()),
+                callback=callback
+            )
+            
             result = self.optimizer.solve()
             
-            if self.is_running:
-                self.after(0, lambda: self.on_optimization_complete(result))
+            self.after(0, lambda: self.finish_optimization(result))
             
-        except StopIteration:
-            self.after(0, lambda: self.log("Optimization stopped by user."))
         except Exception as e:
-            self.after(0, lambda: self.log(f"Error: {str(e)}"))
-        finally:
-            self.after(0, self.reset_ui_state)
+            self.after(0, lambda: self.log(f"Error: {e}"))
+            self.after(0, self.reset_ui)
 
-    def reset_ui_state(self):
-        self.start_button.configure(state="normal")
-        self.stop_button.configure(state="disabled")
-        self.status_label.configure(text="Status: Idle", text_color="gray")
+    def update_progress(self, data):
+        if 'check_stop' in data:
+            return
 
-    def on_optimization_complete(self, result):
-        self.log(f"Optimization Complete! Success: {result['success']}")
-        self.log(f"Final Error: {result['fun']:.6f}")
-        self.log(f"Iterations: {result['nit']}")
+        err = data.get('error')
+        if err is None or not isinstance(err, (int, float)):
+            self.big_error_lbl.configure(text="unknown")
+            self.big_error_lbl.configure(text_color="#95A5A6")  # Gray
+        else:
+            self.big_error_lbl.configure(text=f"{err:.6f}")
+            
+            # Color code error
+            if err < 1e-9: color = "#2CC985" # Green
+            elif err < 1: color = "#F1C40F" # Yellow
+            else: color = "#FF4757" # Red
+            self.big_error_lbl.configure(text_color=color)
         
-        # Update letters
-        letter_map = result['letter_map']
-        for l, val in letter_map.items():
-            self.letter_labels[l].configure(text=f"{l}: {val:.4f}")
+        # Update stats (all fields optional)
+        if 'attempts' in data:
+            self.stat_attempts.configure(text=f"{data['attempts']}")
         
-        # Update results text
-        self.results_textbox.delete("1.0", "end")
-        parser = SpellingParser(letter_values=letter_map)
+        if 'attempts_per_sec' in data or 'speed' in data:
+            aps = data.get('attempts_per_sec', data.get('speed', 0.0))
+            self.stat_speed.configure(text=f"{aps:.1f} it/s")
         
-        solved_count = 0
-        total_count = 0
+        if 'time' in data:
+            elapsed = int(data['time'])
+            mins, secs = divmod(elapsed, 60)
+            self.stat_time.configure(text=f"{mins:02d}:{secs:02d}")
         
-        start_range = self.optimizer.start if self.optimizer else int(self.start_entry.get())
-        end_range = self.optimizer.end if self.optimizer else int(self.end_entry.get())
+        if 'workers' in data:
+            self.stat_workers.configure(text=f"{data['workers']}")
+        
+        # ETA (seconds -> mm:ss or h:mm:ss) - may be None
+        if 'eta' in data or 'eta_seconds' in data:
+            eta = data.get('eta') or data.get('eta_seconds')
+            if eta is None:
+                eta_text = '—'
+            else:
+                try:
+                    eta_s = int(max(0, float(eta)))
+                    if eta_s >= 3600:
+                        h = eta_s // 3600
+                        m = (eta_s % 3600) // 60
+                        s = eta_s % 60
+                        eta_text = f"{h}h {m:02d}m {s:02d}s"
+                    else:
+                        em, es = divmod(eta_s, 60)
+                        eta_text = f"{em:02d}:{es:02d}"
+                except Exception:
+                    eta_text = '—'
+            self.stat_eta.configure(text=eta_text)
 
-        for num in range(start_range, end_range + 1):
+        # Auto worker info (separate small update)
+        if 'auto_worker_info' in data:
+            info = data['auto_worker_info']
+            try:
+                w = info.get('workers')
+                cpu = info.get('cpu_percent')
+                reason = info.get('reason')
+                self.status_lbl.configure(text=f"Auto workers: {w} (CPU {cpu:.0f}%)", text_color="gray70")
+                self.log(f"Auto worker decision: workers={w}, cpu={cpu:.1f}%, reason={reason}")
+            except Exception:
+                pass
+        # Any general log messages
+        if 'log' in data:
+            try:
+                self.log(data['log'])
+            except Exception:
+                pass
+        
+        # Update letters live (only when 'x' is present)
+        if 'x' in data:
+            for i, x in enumerate(data['x']):
+                l = chr(65+i)
+                self.letter_widgets[l].configure(text=f"{x:.2f}")
+
+    def finish_optimization(self, result):
+        # Detailed finish summary
+        success = result.get('success', False)
+        message = result.get('message', '')
+        attempts = result.get('attempts', None)
+        duration = result.get('duration', None)
+
+        self.log(f"Optimization Finished — Success: {success} — {message}")
+        if attempts is not None and duration is not None and duration > 0:
+            self.log(f"Attempts: {attempts} — Duration: {duration:.2f}s — Avg: {attempts/duration:.2f} it/s")
+
+        # Update final progress and show result
+        self.update_progress({'error': result.get('fun', 0.0), 'x': result.get('x', np.zeros(26))})
+        self.reset_ui()
+
+        # Populate results area with detailed validation
+        self.results_box.delete("1.0", "end")
+        parser = SpellingParser(letter_values=result.get('letter_map', {}))
+
+        # If optimizer adjusted start/end due to negatives, use the optimizer if available
+        start = getattr(self.optimizer, 'start', int(self.start_entry.get()))
+        end = getattr(self.optimizer, 'end', int(self.end_entry.get()))
+
+        correct_count = 0
+        total = 0
+
+        for num in range(start, end + 1):
             spelling = number_to_words(num)
             val, expl = parser.calculate_spelled_value(spelling)
             err = (val - num) ** 2
-            status = "✅" if err < 0.01 else "❌"
-            if err < 0.01: solved_count += 1
-            total_count += 1
-            
-            self.results_textbox.insert("end", f"{status} {num}: {spelling}\n")
-            self.results_textbox.insert("end", f"   Calc: {val:.4f} (Err: {err:.6f})\n")
-            self.results_textbox.insert("end", f"   {expl}\n\n")
-            
-        self.log(f"Solved: {solved_count}/{total_count}")
-        self.tabview.set("Results")
+
+            icon = "✅" if err < 0.001 else "❌"
+            if err < 0.001:
+                correct_count += 1
+            total += 1
+
+            self.results_box.insert("end", f"{icon} {num}: {spelling}\n")
+            self.results_box.insert("end", f"   {expl}\n")
+            self.results_box.insert("end", f"   Error: {err:.8f}\n\n")
+
+        if total > 0:
+            self.log(f"Accuracy: {correct_count}/{total} ({correct_count/total*100:.1f}%)")
+        self.main_view.set("Results Analysis")
+
+    def reset_ui(self):
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self.status_lbl.configure(text="Idle", text_color="gray70")
 
     def run_explorer(self):
+        txt = self.exp_entry.get()
+        if not txt: return
+        
+        # Get current letters
+        letters = {}
+        for l, w in self.letter_widgets.items():
+            try:
+                letters[l] = float(w.cget("text"))
+            except:
+                letters[l] = 1.0
+                
+        parser = SpellingParser(letter_values=letters)
+        
         try:
-            num = int(self.exp_entry.get())
+            # Try as number first
+            num = int(txt)
             spelling = number_to_words(num)
-            
-            # Get current letters
-            letters = {}
-            for l, lbl in self.letter_labels.items():
-                txt = lbl.cget("text")
-                val = float(txt.split(": ")[1]) if ": " in txt and "--" not in txt else 1.0
-                letters[l] = val
-            
-            parser = SpellingParser(letter_values=letters)
             val, expl = parser.calculate_spelled_value(spelling)
-            
-            self.exp_result.delete("1.0", "end")
-            self.exp_result.insert("end", f"Number: {num}\n")
-            self.exp_result.insert("end", f"Spelling: {spelling}\n")
-            self.exp_result.insert("end", f"Value: {val:.6f}\n")
-            self.exp_result.insert("end", f"Error: {(val-num)**2:.6f}\n\n")
-            self.exp_result.insert("end", f"Explanation:\n{expl}")
-            
+            target = num
         except ValueError:
-            messagebox.showerror("Error", "Invalid number")
+            # Try as words
+            spelling = txt.upper()
+            val, expl = parser.calculate_spelled_value(spelling)
+            target = None
+            
+        self.exp_out.delete("1.0", "end")
+        self.exp_out.insert("end", f"Input: {txt}\n")
+        self.exp_out.insert("end", f"Spelling: {spelling}\n")
+        self.exp_out.insert("end", f"Calculated: {val:.6f}\n")
+        
+        if target is not None:
+            err = (val - target) ** 2
+            self.exp_out.insert("end", f"Target: {target}\n")
+            self.exp_out.insert("end", f"Error: {err:.8f}\n")
+            
+        self.exp_out.insert("end", f"\nBreakdown:\n{expl}")
 
 if __name__ == "__main__":
+    # Fix for multiprocessing on Windows
+    multiprocessing.freeze_support()
     app = App()
     app.mainloop()

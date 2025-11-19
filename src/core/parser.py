@@ -38,10 +38,6 @@ class SpellingParser:
         """
         Break a spelled number into its components with operators.
         """
-        is_negative = spelling.startswith("NEGATIVE ")
-        if is_negative:
-            spelling = spelling[9:]
-        
         components = []
         current_word = ""
         
@@ -68,12 +64,7 @@ class SpellingParser:
             magnitude = self.WORD_VALUES[current_word]
             components.append((current_word, magnitude, None))
         
-        result = []
-        if is_negative:
-            result.append(("NEGATIVE", -1, 'multiply'))
-        
-        result.extend(components)
-        return result
+        return components
 
     def compile_to_terms(self, spelling: str) -> List[Tuple[float, List[int]]]:
         """
@@ -135,10 +126,6 @@ class SpellingParser:
             if 'A' <= char <= 'Z':
                 indices.append(ord(char) - 65)
         
-        # Special case for NEGATIVE which is just -1
-        if word == "NEGATIVE":
-            return [(-1.0, [])]
-            
         return [(1.0, indices)]
 
     def calculate_value(self, spelling: str, letter_values: Dict[str, float]) -> float:
