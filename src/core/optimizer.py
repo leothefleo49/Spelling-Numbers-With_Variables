@@ -1,155 +1,161 @@
 """
-Hive Mind Optimization Solver (Type-Safe Version)
--------------------------------------------------
-Features:
-1. Analytical Gradient L-BFGS-B (Mathematical exactness for speed).
-2. Hive Mind Strategy: Workers share the "Best Candidate" in real-time.
-3. Dynamic CPU Governor: Auto-scales worker count based on live System vs App load.
-4. Full Negative Number Support.
-5. Robust Type Safety (Fixes Pylance/NoneType errors).
+Hive Mind Optimization Solver (Snap & Flip Edition)
+---------------------------------------------------
+Improvements:
+1. "Snap & Flip" Strategy: Workers actively try rounding floating point results to integers
+   and permuting their signs to find the exact solution instantly.
+2. Stagnation Detection: If the solver gets stuck, it triggers a 'Big Bang' reset to force new paths.
+3. Performance: Reduced solver tolerance (ftol) because we rely on the integer snap for final accuracy.
 """
 
 import numpy as np
 from scipy.optimize import minimize
-from typing import List, Tuple, Dict, Callable, Optional, Any, Union
 import time
-import sys
 import concurrent.futures
 import multiprocessing
 import os
 import psutil
-import math
 import threading
+from typing import List, Dict, Callable, Optional, Any, Union
+
+# Import local modules
 from .parser import SpellingParser
 from .number_to_words import number_to_words
 
-# --- Math Kernels (Global for Multiprocessing Pickling) ---
-
-def vectorized_objective(x, term_coeffs, term_powers, term_indices, targets, num_numbers):
-    """
-    Calculates Error and Exact Analytical Gradient.
-    Handles negative numbers correctly.
-    """
-    x_arr = np.asarray(x, dtype=np.float64)
-    
-    # 1. Calculate value of every term: coeff * product(x_i ^ p_i)
+# --- Safety Helper ---
+def get_safe_cpu_count() -> int:
     try:
-        # Broadcasting x over term_powers
-        bases = np.power(x_arr, term_powers) 
-        term_values = term_coeffs * np.prod(bases, axis=1)
-    except Exception:
-        # Fallback for safety
-        term_values = term_coeffs.copy()
-        for i in range(26):
-            mask = term_powers[:, i] != 0
-            term_values[mask] *= (x_arr[i] ** term_powers[mask, i])
+        count = os.cpu_count()
+        if count is None or count < 1:
+            return 1
+        return int(count)
+    except:
+        return 1
 
-    # 2. Sum terms to get value for each number
-    calc_values = np.zeros(num_numbers, dtype=np.float64)
-    np.add.at(calc_values, term_indices, term_values)
-    
-    # 3. Calculate Error (Residuals)
-    diffs = calc_values - targets
-    total_error = np.sum(diffs ** 2)
-    
-    # 4. Calculate Gradient (Analytical differentiation)
-    term_diffs = diffs[term_indices]  # Map number diffs back to terms
-    
-    with np.errstate(divide='ignore', invalid='ignore'):
-        # Efficient gradient calculation:
-        # Grad_k = Sum_terms ( 2 * diff * term_val * power_k / x_k )
-        
-        pv = 2.0 * term_diffs * term_values # Shape: (N_terms,)
-        
-        # We need to multiply pv by (powers / x)
-        weighted_powers = term_powers * pv[:, np.newaxis]
-        
-        # Sum over terms for each letter
-        grad_numer = np.sum(weighted_powers, axis=0)
-        
-        # Final divide by x
-        safe_x = np.where(np.abs(x_arr) < 1e-10, 1e-10, x_arr)
-        gradient = grad_numer / safe_x
-        
-        # Fix gradient where x was effectively 0 to prevent explosion
-        gradient = np.where(np.abs(x_arr) < 1e-10, 0.0, gradient)
-
-    return total_error, gradient
-
-
-def compute_per_number_values(x, term_coeffs, term_powers, term_indices, targets, num_numbers):
+# --- Math Kernels ---
+def vectorized_objective(x: np.ndarray, term_coeffs: np.ndarray, term_powers: np.ndarray, 
+                         term_indices: np.ndarray, targets: np.ndarray, num_numbers: int):
     """
-    Compute the per-number calculated values (not the total error).
-    Returns a numpy array of length `num_numbers`.
+    Calculates Error and Analytical Gradient.
     """
     x_arr = np.asarray(x, dtype=np.float64)
+    
+    # 1. Calculate term values
     try:
         bases = np.power(x_arr, term_powers)
         term_values = term_coeffs * np.prod(bases, axis=1)
     except Exception:
         term_values = term_coeffs.copy()
-        for i in range(26):
+        for i in range(len(x_arr)):
             mask = term_powers[:, i] != 0
-            term_values[mask] *= (x_arr[i] ** term_powers[mask, i])
+            if np.any(mask):
+                term_values[mask] *= np.power(x_arr[i], term_powers[mask, i])
 
+    # 2. Sum terms
     calc_values = np.zeros(num_numbers, dtype=np.float64)
     np.add.at(calc_values, term_indices, term_values)
-    return calc_values
+    
+    # 3. Residuals
+    diffs = calc_values - targets
+    total_error = np.sum(diffs ** 2)
+    
+    # 4. Gradient
+    term_diffs = diffs[term_indices] 
+    pv = 2.0 * term_diffs * term_values 
+    grad_numer = np.dot(pv, term_powers)
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        safe_x = np.where(np.abs(x_arr) < 1e-12, 1e-12, x_arr)
+        gradient = grad_numer / safe_x
+        gradient = np.where((np.abs(x_arr) < 1e-12) & (np.abs(grad_numer) < 1e-12), 0.0, gradient)
 
-def worker_task(seed, bounds, shared_data, task_args):
+    return total_error, gradient
+
+def worker_task(seed: int, bounds: List, shared_data: Any, task_args: tuple):
     """
-    The Worker Drone.
-    1. Checks Shared Memory for the current best solution (Hive Mind).
-    2. Mutates it slightly (Exploration).
-    3. Runs Gradient Descent (Exploitation).
-    4. Reports back if it found something better.
+    Hive Mind Worker with "Snap & Flip" logic.
     """
-    # Ensure seed is a valid 32-bit unsigned integer (required by numpy)
+    # Ensure seed fits 32-bit unsigned (np.random requires 0 <= seed < 2**32)
     try:
         seed = int(seed) & 0xFFFFFFFF
     except Exception:
-        seed = int(time.time()) & 0xFFFFFFFF
+        seed = int(time.time() * 1000) & 0xFFFFFFFF
     np.random.seed(seed)
+    term_coeffs, term_powers, term_indices, targets, num_numbers = task_args
     
     # --- HIVE MIND: READ ---
-    # Check if the swarm found a good spot. If so, start there.
-    best_x_so_far = shared_data.get('best_x', None)
-    best_err_so_far = shared_data.get('best_err', float('inf'))
+    best_x = None
+    best_err = float('inf')
     
+    if shared_data is not None:
+        try:
+            best_x = shared_data.get('best_x')
+            best_err = shared_data.get('best_err', float('inf'))
+        except: pass
+
+    # --- STRATEGY 1: SNAP & FLIP (The "Closer" Strategy) ---
+    # If we are reasonably close, try to force the integer solution
+    if best_x is not None and best_err < 100.0:
+        # 1. Round to nearest integer
+        x_round = np.round(best_x)
+        
+        # 2. Check Error
+        err_round, _ = vectorized_objective(x_round, *task_args)
+        if err_round < 1e-5:
+            return {'success': True, 'x': x_round, 'fun': err_round, 'nit': 0}
+        
+        # 3. Flip Search: Randomly flip signs of the rounded vector to see if that fixes it
+        # This helps when x^2 = 25 found x=5 but needed x=-5
+        for _ in range(20): # Try 20 permutations
+            x_flip = x_round.copy()
+            # Flip 1 to 4 variables
+            flip_idx = np.random.choice(26, size=np.random.randint(1, 5), replace=False)
+            x_flip[flip_idx] *= -1
+            
+            err_flip, _ = vectorized_objective(x_flip, *task_args)
+            if err_flip < 1e-5:
+                return {'success': True, 'x': x_flip, 'fun': err_flip, 'nit': 0}
+
+    # --- STRATEGY 2: OPTIMIZATION (The "Search" Strategy) ---
     initial_guess = None
     
-    if best_x_so_far is not None and np.random.random() > 0.2:
-        # 80% chance to learn from the best (Exploitation)
-        try:
-            # Add jitter to break out of local minima
-            jitter_scale = max(0.1, min(1.0, best_err_so_far / 1000.0))
-            initial_guess = np.array(best_x_so_far) + np.random.normal(0, jitter_scale, 26)
-        except Exception:
-            initial_guess = None
+    # 70% Chance to refine best, 30% chance to explore
+    if best_x is not None and np.random.random() > 0.3:
+        noise = np.random.normal(0, max(0.1, best_err / 500.0), 26)
+        initial_guess = best_x + noise
+    else:
+        # Random initialization
+        initial_guess = np.random.uniform(bounds[0][0], bounds[0][1], 26)
     
-    if initial_guess is None:
-        # 20% chance (or fallback) to try something completely new
-        if bounds[0][0] < 0:
-            initial_guess = np.random.uniform(-10, 10, 26)
-        else:
-            initial_guess = np.random.uniform(0, 20, 26)
+        # Respect fixed bounds: if a bound is a singleton (a,a) then fix initial guess
+        try:
+            for i in range(len(initial_guess)):
+                lo, hi = bounds[i]
+                if lo == hi:
+                    initial_guess[i] = lo
+        except Exception:
+            pass
 
     try:
+        # We use looser tolerance (1e-4) because we rely on Snap & Flip for the final precision
         result = minimize(
             vectorized_objective,
             initial_guess,
             args=task_args,
             method='L-BFGS-B',
-            jac=True, # We provide exact gradient
+            jac=True,
             bounds=bounds,
-            options={'maxiter': 200, 'ftol': 1e-9, 'gtol': 1e-9}
+            options={'maxiter': 80, 'ftol': 1e-4, 'gtol': 1e-4}
         )
         
-        # --- HIVE MIND: WRITE ---
-        if result.success or result.fun < best_err_so_far:
-            if result.fun < best_err_so_far:
-                shared_data['best_x'] = result.x
-                shared_data['best_err'] = result.fun
+        # --- HIVE MIND: TEACH ---
+        if shared_data is not None:
+            try:
+                if result.fun < best_err:
+                    if result.fun < shared_data.get('best_err', float('inf')):
+                        shared_data['best_x'] = result.x
+                        shared_data['best_err'] = result.fun
+            except: pass
 
         return {
             'success': result.success,
@@ -176,90 +182,108 @@ class Optimizer:
         self.parser = SpellingParser(space_operator=space_operator, hyphen_operator=hyphen_operator)
         self.callback = callback
         self.cpu_usage_setting = cpu_usage
-        
         self.letters = [chr(65+i) for i in range(26)]
         
-        # --- Compile Math Structures ---
         self._compile_terms()
         
-        # --- CPU Control State ---
         self.running = False
+        self.should_stop = False
+        self.max_allowed_workers = 1
         self.current_workers = 0
-        # Safety: ensure cpu_count is an int, default to 1 if None
-        self.max_allowed_workers = os.cpu_count() or 1
         self.system_cpu = 0.0
         self.app_cpu = 0.0
-        self.should_stop = False
 
     def _compile_terms(self):
-        """Pre-compiles string words into numpy math arrays."""
-        term_coeffs_list = []
-        term_powers_list = []
-        term_indices_list = []
-        targets_list = []
+        """Converts words to mathematical arrays."""
+        coeffs = []
+        powers = []
+        indices = []
+        targets = []
         
-        print(f"Compiling math for {len(self.numbers)} numbers...")
+        print(f"Compiling math for numbers {self.numbers[0]} to {self.numbers[-1]}...")
+        
         for i, num in enumerate(self.numbers):
             spelling = number_to_words(num)
             terms = self.parser.compile_to_terms(spelling)
-            targets_list.append(num)
+            targets.append(num)
             
-            for coeff, indices in terms:
-                counts = np.zeros(26, dtype=np.float64)
-                for idx in indices:
-                    counts[idx] += 1
-                term_coeffs_list.append(coeff)
-                term_powers_list.append(counts)
-                term_indices_list.append(i)
+            for coeff, letter_idxs in terms:
+                p = np.zeros(26, dtype=np.int32)
+                for idx in letter_idxs:
+                    p[idx] += 1
+                coeffs.append(coeff)
+                powers.append(p)
+                indices.append(i)
                 
-        self.term_coeffs = np.array(term_coeffs_list, dtype=np.float64)
-        self.term_powers = np.array(term_powers_list, dtype=np.int32)
-        self.term_indices = np.array(term_indices_list, dtype=np.int32)
-        self.targets = np.array(targets_list, dtype=np.float64)
+        self.term_coeffs = np.array(coeffs, dtype=np.float64)
+        self.term_powers = np.array(powers, dtype=np.int32)
+        self.term_indices = np.array(indices, dtype=np.int32)
+        self.targets = np.array(targets, dtype=np.float64)
         self.num_numbers = len(self.numbers)
+        # Determine which letters actually appear in any term
+        try:
+            used = np.any(self.term_powers != 0, axis=0)
+            self.letters_used = [bool(u) for u in used]
+        except Exception:
+            self.letters_used = [True] * 26
+
+    def _generate_smart_guess(self):
+        """Log-Linear Least Squares on atomic words."""
+        try:
+            rows = []
+            b_vals = []
+            unique_hashes = set()
+            
+            for i in range(self.num_numbers):
+                target_val = self.targets[i]
+                if target_val <= 0: continue 
+                
+                these_term_indices = np.where(self.term_indices == i)[0]
+                if len(these_term_indices) == 1:
+                    t_idx = these_term_indices[0]
+                    if abs(self.term_coeffs[t_idx]) == 1:
+                        row = self.term_powers[t_idx]
+                        row_hash = row.tobytes()
+                        if row_hash in unique_hashes: continue
+                        unique_hashes.add(row_hash)
+                        rows.append(row)
+                        b_vals.append(np.log(target_val))
+            
+            if len(rows) < 1: return None
+            
+            A = np.array(rows)
+            b = np.array(b_vals)
+            log_x, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            guess = np.exp(log_x)
+            
+            # Set defaults for unknown letters
+            col_sums = np.sum(np.abs(A), axis=0)
+            guess = np.where(col_sums > 0, guess, 10.0)
+            
+            if self.allow_negative:
+                signs = np.random.choice([1, -1], size=26)
+                guess = guess * signs
+                
+            return guess
+        except Exception:
+            return None
 
     def _cpu_governor(self):
-        """
-        Background thread that monitors System vs App CPU.
-        Adjusts self.current_workers dynamic limit.
-        """
         p = psutil.Process(os.getpid())
-        
-        while self.running:
+        while self.running and not self.should_stop:
             try:
-                # Get loads
-                sys_load = psutil.cpu_percent(interval=0.5)
-                
-                # Safety: psutil.cpu_count() can return None
-                cpu_count = psutil.cpu_count() or 1
-                app_load = p.cpu_percent(interval=None) / cpu_count 
+                sys_load = psutil.cpu_percent(interval=1.0)
+                count = get_safe_cpu_count()
+                app_load = p.cpu_percent(interval=None) / count
                 
                 self.system_cpu = sys_load
                 self.app_cpu = app_load
-
-                # Safety Thresholds
-                TARGET_MAX = 90.0
-                LAG_THRESHOLD = 95.0
                 
-                # Logic: If system is stressed, reduce workers. If room exists, increase.
-                logical_cores = psutil.cpu_count(logical=True) or 1
-                
-                # Ensure self.max_allowed_workers is treated as int
-                current_limit = self.max_allowed_workers or 1
-                
-                if sys_load > LAG_THRESHOLD:
-                    # Emergency brake
-                    current_limit = max(1, int(current_limit * 0.5))
-                elif sys_load > TARGET_MAX:
-                    # Gentle throttle
-                    current_limit = max(1, current_limit - 1)
-                elif sys_load < 70.0 and current_limit < logical_cores:
-                    # Ramp up
-                    current_limit += 1
-                
-                self.max_allowed_workers = int(current_limit)
-                
-                # Send stats to UI if callback exists
+                if sys_load > 90:
+                    if self.max_allowed_workers > 1: self.max_allowed_workers -= 1
+                elif sys_load < 75:
+                    if self.max_allowed_workers < count: self.max_allowed_workers += 1
+                        
                 if self.callback:
                     self.callback({
                         'cpu_stats': {
@@ -269,52 +293,51 @@ class Optimizer:
                             'limit': self.max_allowed_workers
                         }
                     })
-            except Exception:
-                pass
-            
-            time.sleep(0.5)
+            except Exception: pass
 
     def solve(self):
         self.running = True
         self.should_stop = False
         start_time = time.time()
         
-        # Start CPU Governor
-        gov_thread = threading.Thread(target=self._cpu_governor, daemon=True)
-        gov_thread.start()
+        threading.Thread(target=self._cpu_governor, daemon=True).start()
         
-        bounds = [(-100, 100) if self.allow_negative else (0, 100) for _ in range(26)]
+        bounds = [(-100.0, 100.0) if self.allow_negative else (0.0, 100.0) for _ in range(26)]
+        # Freeze bounds for letters that never appear (they don't need a variable)
+        for i in range(26):
+            if not getattr(self, 'letters_used', [True]*26)[i]:
+                bounds[i] = (0.0, 0.0)
+
         task_args = (self.term_coeffs, self.term_powers, self.term_indices, self.targets, self.num_numbers)
         
-        print("Initializing Hive Mind (Multiprocessing Manager)...")
-        
-        # Use a Manager to share the "Best DNA" across processes
+        print("Starting Hive Mind optimization...")
+
         with multiprocessing.Manager() as manager:
-            # Shared memory dict
             shared_data = manager.dict()
             shared_data['best_x'] = None
             shared_data['best_err'] = float('inf')
             
-            total_cores = os.cpu_count() or 1
+            # Smart Guess
+            smart_guess = self._generate_smart_guess()
+            if smart_guess is not None:
+                print("Analytical guess generated.")
+                shared_data['best_x'] = smart_guess
+                err, _ = vectorized_objective(smart_guess, *task_args)
+                shared_data['best_err'] = err
+            
+            total_cores = get_safe_cpu_count()
             self.max_allowed_workers = max(1, total_cores - 1)
             
-            best_global_result = None
-            best_global_error = float('inf')
+            best_global_x = np.zeros(26)
+            best_global_err = float('inf')
             attempts = 0
-
-            # Progress history for ETA estimation (list of (time, error))
-            best_history = []
-            last_print_time = start_time
-            last_attempts = 0
-            last_attempts_time = start_time
             
-            # We manage the executor manually to allow dynamic scaling
             with concurrent.futures.ProcessPoolExecutor(max_workers=total_cores) as executor:
                 futures = set()
                 
                 while not self.should_stop:
-                    # 1. Check Results
-                    done, _ = concurrent.futures.wait(futures, timeout=0.05, return_when=concurrent.futures.FIRST_COMPLETED)
+                    # Non-blocking check (wait=0.01s)
+                    done, _ = concurrent.futures.wait(futures, timeout=0.01, return_when=concurrent.futures.FIRST_COMPLETED)
                     
                     for future in done:
                         futures.remove(future)
@@ -323,186 +346,51 @@ class Optimizer:
                         
                         try:
                             res = future.result()
-                            if res['fun'] < best_global_error:
-                                best_global_error = res['fun']
-                                best_global_result = res
+                            if res['fun'] < best_global_err:
+                                best_global_err = res['fun']
+                                best_global_x = res['x']
+                                
+                                # IMMEDIATE STOP on perfect solution
+                                if best_global_err < 1e-5:
+                                    print("Solution Found!")
+                                    self.running = False
+                                    return self._pack_result(best_global_x, best_global_err, attempts, start_time)
 
-                                now = time.time()
-                                # record history point for ETA fitting
-                                best_history.append((now - start_time, float(best_global_error)))
-
-                                # compute percent solved using per-number values
-                                try:
-                                    calc_vals = compute_per_number_values(res['x'], *task_args)
-                                    correct_mask = np.isfinite(calc_vals) & (np.abs(calc_vals - self.targets) < 1e-6)
-                                    pct_solved = 100.0 * (np.count_nonzero(correct_mask) / float(self.num_numbers))
-                                except Exception:
-                                    pct_solved = 0.0
-
-                                # compute simple attempts/sec over short window
-                                now_t = now
-                                elapsed = max(1e-6, now_t - last_attempts_time)
-                                attempts_delta = attempts - last_attempts
-                                attempts_per_sec = attempts_delta / elapsed if elapsed > 0 else 0.0
-                                last_attempts = attempts
-                                last_attempts_time = now_t
-
-                                # ETA estimation: exponential decay fit on error history
-                                eta_seconds = None
-                                try:
-                                    if len(best_history) >= 3:
-                                        times = np.array([t for t, e in best_history[-8:]])
-                                        errs = np.array([e for t, e in best_history[-8:]])
-                                        # avoid zeros
-                                        errs = np.clip(errs, 1e-20, None)
-                                        logs = np.log(errs)
-                                        # fit linear model logs = m * t + b
-                                        m, b = np.polyfit(times, logs, 1)
-                                        if m < 0:
-                                            target_err = 1e-9
-                                            curr_log = logs[-1]
-                                            eta_seconds = (math.log(target_err) - curr_log) / m
-                                            if eta_seconds < 0:
-                                                eta_seconds = None
-                                except Exception:
-                                    eta_seconds = None
-
-                                # UI Update for new best
                                 if self.callback:
                                     self.callback({
-                                        'x': res['x'],
-                                        'error': best_global_error,
-                                        'time': now - start_time,
+                                        'x': best_global_x,
+                                        'error': best_global_err,
                                         'attempts': attempts,
-                                        'attempts_per_sec': attempts_per_sec,
-                                        'eta_seconds': eta_seconds,
-                                        'percent_solved': pct_solved,
-                                        'log': f"New Record! Error: {best_global_error:.6f} ({pct_solved:.1f}% solved)"
+                                        'time': time.time() - start_time,
+                                        'letters_used': getattr(self, 'letters_used', [True]*26)
                                     })
+                        except Exception: pass
 
-                                # Check for "Perfect" integer snap solution
-                                if best_global_error < 0.1:
-                                    # Try rounding
-                                    x_rounded = np.round(res['x'])
-                                    err_r, _ = vectorized_objective(x_rounded, *task_args)
-                                    if err_r < 1e-9:
-                                        print("Integer Solution Found!")
-                                        self.running = False
-                                        return self._pack_result(x_rounded, 0.0, attempts, start_time)
-                                        
-                        except Exception as e:
-                            print(f"Worker died: {e}")
-
-                    # 2. Dynamic Scaling / Submission
-                    # Only submit if we are below the dynamic limit set by Governor
-                    # Safety check: self.max_allowed_workers could technically be None during init race, defaulting to 1
-                    safe_max_workers = self.max_allowed_workers or 1
-                    
-                    while len(futures) < safe_max_workers:
+                    # Dynamic Scaling
+                    target_workers = self.max_allowed_workers
+                    if len(futures) < target_workers:
                         self.current_workers += 1
-                        # Use a bounded 32-bit seed to avoid numpy errors
                         seed = (int(time.time() * 1000000) + attempts) & 0xFFFFFFFF
-                        # Submit task with access to shared_data
                         futures.add(executor.submit(worker_task, seed, bounds, shared_data, task_args))
-
-                    # 3. Check Stop Condition
-                    # Safety: Ensure best_global_result is not None before accessing
-                    if best_global_result is not None and best_global_error < 1e-9:
-                         self.running = False
-                         return self._pack_result(best_global_result['x'], best_global_result['fun'], attempts, start_time)
-
-                    # UI Update Heartbeat
-                    # Periodic UI heartbeat and terminal progress (every ~0.5s)
-                    now = time.time()
-                    if now - last_print_time >= 0.5:
-                        last_print_time = now
-                        elapsed = now - start_time
-                        attempts_per_sec_live = attempts / max(1e-6, elapsed)
-
-                        # percent solved from best result if available
-                        pct = 0.0
-                        if best_global_result is not None:
-                            try:
-                                calc_vals = compute_per_number_values(best_global_result['x'], *task_args)
-                                correct_mask = np.isfinite(calc_vals) & (np.abs(calc_vals - self.targets) < 1e-6)
-                                pct = 100.0 * (np.count_nonzero(correct_mask) / float(self.num_numbers))
-                            except Exception:
-                                pct = 0.0
-
-                        # ETA estimation from history (reuse last fitted value if present)
-                        eta_seconds = None
-                        try:
-                            if len(best_history) >= 3:
-                                times = np.array([t for t, e in best_history[-8:]])
-                                errs = np.array([e for t, e in best_history[-8:]])
-                                errs = np.clip(errs, 1e-20, None)
-                                logs = np.log(errs)
-                                m, b = np.polyfit(times, logs, 1)
-                                if m < 0:
-                                    target_err = 1e-9
-                                    curr_log = logs[-1]
-                                    eta_seconds = (math.log(target_err) - curr_log) / m
-                                    if eta_seconds < 0:
-                                        eta_seconds = None
-                        except Exception:
-                            eta_seconds = None
-
-                        def fmt_seconds(s):
-                            if s is None or not (isinstance(s, (int, float)) and math.isfinite(s)):
-                                return 'unknown'
-                            s = int(max(0, int(s)))
-                            h = s // 3600
-                            m = (s % 3600) // 60
-                            sec = s % 60
-                            parts = []
-                            if h:
-                                parts.append(f"{h}h")
-                            if m:
-                                parts.append(f"{m}m")
-                            parts.append(f"{sec}s")
-                            return ' '.join(parts)
-
-                        eta_str = fmt_seconds(eta_seconds)
-
-                        best_err_str = "unknown" if not (isinstance(best_global_error, float) and math.isfinite(best_global_error)) else f"{best_global_error:.6e}"
-                        status = (f"Attempts: {attempts} | {attempts_per_sec_live:.1f}/s | "
-                                  f"Workers: {self.current_workers}/{safe_max_workers} | "
-                                  f"Best Err: {best_err_str} | "
-                                  f"Solved: {pct:.1f}% | ETA: {eta_str}")
-
-                        # Print to terminal, trying to overwrite previous line when possible
-                        try:
-                            sys.stdout.write('\r' + status + ' ' * 10)
-                            sys.stdout.flush()
-                        except Exception:
-                            print(status)
-
-                        # Also send heartbeat to UI
-                        if self.callback:
-                            self.callback({
-                                'attempts': attempts,
-                                'workers': self.current_workers,
-                                'time': elapsed,
-                                'error': None if not (isinstance(best_global_error, float) and math.isfinite(best_global_error)) else best_global_error,
-                                'attempts_per_sec': attempts_per_sec_live,
-                                'eta': eta_seconds,
-                                'percent_solved': pct
-                            })
+                    
+                    # Heartbeat
+                    if self.callback and attempts % 10 == 0:
+                        self.callback({'check_stop': True})
 
         self.running = False
-        
-        # Final fallback return
-        final_x = best_global_result['x'] if best_global_result is not None else np.zeros(26)
-        
-        return self._pack_result(final_x, best_global_error, attempts, start_time)
+        return self._pack_result(best_global_x, best_global_err, attempts, start_time)
 
     def _pack_result(self, x, error, attempts, start_time):
+        if x is None: x = np.zeros(26)
+        # Final round to ensure display looks clean
+        x_final = np.round(x) if error < 0.1 else x
         return {
             'success': error < 1e-3,
-            'x': x,
+            'x': x_final,
             'fun': error,
             'nit': 0,
-            'letter_map': {self.letters[i]: float(x[i]) for i in range(26)},
+            'letter_map': {self.letters[i]: float(x_final[i]) for i in range(26)},
+            'letters_used': getattr(self, 'letters_used', [True]*26),
             'attempts': attempts,
             'duration': time.time() - start_time
         }

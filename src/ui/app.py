@@ -342,9 +342,25 @@ class App(ctk.CTk):
         
         # Update letters live (only when 'x' is present)
         if 'x' in data:
+            letters_used = data.get('letters_used', getattr(self.optimizer, 'letters_used', [True]*26))
             for i, x in enumerate(data['x']):
                 l = chr(65+i)
-                self.letter_widgets[l].configure(text=f"{x:.2f}")
+                try:
+                    used = bool(letters_used[i])
+                except Exception:
+                    used = True
+
+                if not used:
+                    # Show explicit N/A for letters that never appear
+                    self.letter_widgets[l].configure(text="N/A", text_color="gray60")
+                else:
+                    try:
+                        if x is None or (isinstance(x, float) and (math.isinf(x) or math.isnan(x))):
+                            self.letter_widgets[l].configure(text="unknown")
+                        else:
+                            self.letter_widgets[l].configure(text=f"{x:.2f}", text_color="#2CC985")
+                    except Exception:
+                        self.letter_widgets[l].configure(text=str(x))
 
     def finish_optimization(self, result):
         # Detailed finish summary
@@ -357,8 +373,12 @@ class App(ctk.CTk):
         if attempts is not None and duration is not None and duration > 0:
             self.log(f"Attempts: {attempts} — Duration: {duration:.2f}s — Avg: {attempts/duration:.2f} it/s")
 
-        # Update final progress and show result
-        self.update_progress({'error': result.get('fun', 0.0), 'x': result.get('x', np.zeros(26))})
+        # Update final progress and show result (include letters_used)
+        self.update_progress({
+            'error': result.get('fun', 0.0),
+            'x': result.get('x', np.zeros(26)),
+            'letters_used': result.get('letters_used', getattr(self.optimizer, 'letters_used', [True]*26))
+        })
         self.reset_ui()
 
         # Populate results area with detailed validation
